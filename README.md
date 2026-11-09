@@ -18,7 +18,7 @@
 
 ### ✨ 特性一览 (Features)
 
-* **GKI 6.6 稳定基线**：完美契合 Android 15 (ColorOS 15)，严格保障官方闭源硬件驱动（KMI）兼容。
+* **GKI 6.6 稳定基线**：完美契合 GKI 6.6-Android 15 ，严格保障官方闭源硬件驱动（KMI）兼容。
 * **一加风驰架构 (OGKI)**：深度保留一加专有 `sched_assist` 调度器与 `task_mmu` 调优，丝滑高刷、省电稳帧。
 * **BakaSU 内核级 Root**：集成次世代内核 Root（v4.2.0-rc3 / Code: 35257），支持动态授权与 sucompat。
 * **SuSFS v2.3.0**：内核级深度隐匿，挂载伪装、特征抹除与 AVC 访问日志欺骗。
