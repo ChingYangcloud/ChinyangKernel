@@ -101,14 +101,14 @@ jobs:
         run: |
           DEFCONFIG="$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig"
           cat >> "$DEFCONFIG" << 'EOF'
-          CONFIG_ARM64_4K_PAGES=y
-          CONFIG_ARM64_PAGE_SHIFT=12
           CONFIG_TMPFS_XATTR=y
           CONFIG_TMPFS_POSIX_ACL=y
           CONFIG_KSU=y
-          # CONFIG_F2FS_FS_DEDUP is not set
-          # CONFIG_F2FS_FS_COMPRESSION_FIXED_OUTPUT is not set
           EOF
+          if grep -q "F2FS_FS_DEDUP" common/fs/f2fs/Kconfig; then
+            echo "# CONFIG_F2FS_FS_DEDUP is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_F2FS_FS_COMPRESSION_FIXED_OUTPUT is not set" >> "$DEFCONFIG"
+          fi
           if [ "${{ inputs.enable_bbg }}" = "true" ]; then
             echo "CONFIG_BBG=y" >> "$DEFCONFIG"
           fi
