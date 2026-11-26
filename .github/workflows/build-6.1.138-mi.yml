@@ -150,7 +150,15 @@ jobs:
           sed -i "\$s|echo \"\$res\"|echo \"${TARGET_LOCALVERSION}\"|" ./common/scripts/setlocalversion 2>/dev/null || true
           sed -i "/^CONFIG_LOCALVERSION=/ s/=\"[^\"]*\"/=\"${TARGET_LOCALVERSION}\"/" "$DEFCONFIG" 2>/dev/null || true
           if [ -f ./common/scripts/mkcompile_h ]; then
-            perl -pi -e "s{UTS_VERSION=\"\\\$\\\(.*?\\\)\"}{UTS_VERSION=\"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\"}" ./common/scripts/mkcompile_h || true
+            f=./common/scripts/mkcompile_h
+            if grep -q 'UTS_VERSION=' "$f"; then
+              perl -pi -e "s{UTS_VERSION=\"\\\$\\\(.*?\\\)\"}{UTS_VERSION=\"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\"}" "$f"
+            else
+              perl -0777 -pi -e "s{cat <<EOF}{cat <<EOF\n#undef UTS_VERSION\n#define UTS_VERSION \"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\" } unless /UTS_VERSION/" "$f"
+            fi
+          fi
+          if [ -f ./common/init/version-timestamp.c ]; then
+            perl -pi -e "s{UTS_VERSION}{\"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\"}" ./common/init/version-timestamp.c
           fi
 
       - name: Build Kernel (LTO=thin)
@@ -167,7 +175,7 @@ jobs:
           else
             git -C common diff arch/arm64/configs/gki_defconfig | grep '^+' | grep -v '^+++' | sed 's/^+//' > common/arch/arm64/configs/ksu.fragment || true
             git -C common checkout -- arch/arm64/configs/gki_defconfig
-            tools/bazel build --config=fast --lto=thin --defconfig_fragment=//common:arch/arm64/configs/ksu.fragment //common:kernel_aarch64_dist 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+            tools/bazel build --config=fast --lto=thin --action_env="KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP}" --action_env="KBUILD_BUILD_USER=${KBUILD_BUILD_USER}" --action_env="KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST}" --action_env="KBUILD_BUILD_VERSION=${KBUILD_BUILD_VERSION}" --defconfig_fragment=//common:arch/arm64/configs/ksu.fragment //common:kernel_aarch64_dist 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
             cp ./bazel-bin/common/kernel_aarch64/Image "$GITHUB_WORKSPACE/Image"
           fi
           strings "$GITHUB_WORKSPACE/Image" | grep 'Linux version' | head -n 1
