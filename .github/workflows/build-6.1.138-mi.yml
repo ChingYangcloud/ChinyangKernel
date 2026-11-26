@@ -87,7 +87,22 @@ jobs:
           cp -r "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/"* ./common/include/linux/
           cd ./common
           PATCH_FILE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
-          patch -p1 --fuzz=3 < "$PATCH_FILE" || true
+          # Fix 6.1.138 context for SUSFS main patch (<=141 base.c, <157 namespace.c)
+          DMA_ADDED=0
+          if ! grep -qF '#include <linux/dma-buf.h>' fs/proc/base.c; then
+            sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
+            DMA_ADDED=1
+          fi
+          BLK_ADDED=0
+          if awk '/^diff --git a\/fs\/namespace.c /{f=1;next} /^diff --git /{f=0} f && $0 == " #include <trace/hooks/blk.h>" {found=1} END{exit !found}' "$PATCH_FILE"; then
+            if ! grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+              sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+              BLK_ADDED=1
+            fi
+          fi
+          patch -p1 --fuzz=3 < "$PATCH_FILE"
+          [ "$BLK_ADDED" -eq 1 ] && sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+          [ "$DMA_ADDED" -eq 1 ] && sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c || true
 
       - name: Integrate Baseband-Guard (BBG)
         if: inputs.enable_bbg
