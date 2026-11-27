@@ -180,16 +180,49 @@ jobs:
           fi
           strings "$GITHUB_WORKSPACE/Image" | grep 'Linux version' | head -n 1
 
-      - name: Package AnyKernel3 (forward-slash ZIP)
+      - name: Package AnyKernel3 (forward-slash ZIP + integrity & TG verification)
         if: success()
         run: |
           git clone --depth=1 -b gki-2.0 https://github.com/WildKernels/AnyKernel3.git "$GITHUB_WORKSPACE/AnyKernel3"
           rm -rf "$GITHUB_WORKSPACE/AnyKernel3/.git"
           cp "$GITHUB_WORKSPACE/Image" "$GITHUB_WORKSPACE/AnyKernel3/Image"
+          cp "$GITHUB_WORKSPACE/ak3_template/anykernel.sh" "$GITHUB_WORKSPACE/AnyKernel3/anykernel.sh"
           python3 - << 'PYEOF'
-          import os, time, zipfile
+          import hashlib, os, time, zipfile
           src = os.path.abspath(os.environ["GITHUB_WORKSPACE"] + "/AnyKernel3")
           out = os.environ["GITHUB_WORKSPACE"] + "/Chinyang-6.1.138-mi-AnyKernel3.zip"
+
+          def sha256_file(p):
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(65536), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          ak_sh = os.path.join(src, "anykernel.sh")
+          with open(ak_sh, "r", encoding="utf-8") as f:
+              txt = f.read()
+          txt = (txt
+              .replace("__EXP_IMAGE__", sha256_file(os.path.join(src, "Image")))
+              .replace("__EXP_CORE__", sha256_file(os.path.join(src, "tools/ak3-core.sh")))
+              .replace("__EXP_BOOT__", sha256_file(os.path.join(src, "tools/magiskboot")))
+              .replace("__EXP_BUSYBOX__", sha256_file(os.path.join(src, "tools/busybox")))
+              .replace("\r\n", "\n"))
+          with open(ak_sh, "w", encoding="utf-8", newline="\n") as f:
+              f.write(txt)
+
+          sum_lines = []
+          for root, _, files in os.walk(src):
+              for fname in sorted(files):
+                  full = os.path.join(root, fname)
+                  rel = os.path.relpath(full, src).replace("\\", "/")
+                  if rel == "sha256sum.txt":
+                      continue
+                  sum_lines.append(f"{sha256_file(full)}  {rel}")
+          sum_lines.sort(key=lambda x: x.split("  ", 1)[1])
+          with open(os.path.join(src, "sha256sum.txt"), "w", encoding="utf-8", newline="\n") as f:
+              f.write("\n".join(sum_lines) + "\n")
+
           now = time.localtime()[:6]
           with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
               for root, _, files in os.walk(src):
@@ -204,7 +237,7 @@ jobs:
                       zi.create_system = 3
                       zi.external_attr = (0o100755 if (arc.endswith(".sh") or arc.startswith("tools/") or "META-INF/" in arc) else 0o100644) << 16
                       zf.writestr(zi, data)
-          print("Packaged:", out)
+          print("Packaged:", out, "SHA-256:", sha256_file(out))
           PYEOF
 
       - name: Upload Build Artifacts
