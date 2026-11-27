@@ -157,9 +157,6 @@ fi
 
 IP_COUNTRY=$($FETCH_CMD "https://ipinfo.io/country" 2>/dev/null | tr -d '[:space:]"')
 
-if [ -z "$IP_COUNTRY" ] || [ ${#IP_COUNTRY} -ne 2 ]; then
-    IP_COUNTRY=$($FETCH_CMD "http://ip-api.com/line/?fields=countryCode" 2>/dev/null | tr -d '[:space:]"')
-fi
 
 if [ -z "$IP_COUNTRY" ] || [ ${#IP_COUNTRY} -ne 2 ]; then
     IP_COUNTRY=$($FETCH_CMD "https://ifconfig.co/country" 2>/dev/null | tr -d '[:space:]"')
