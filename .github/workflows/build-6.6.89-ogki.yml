@@ -1,0 +1,256 @@
+name: Build OnePlus OGKI 6.6.89 (16.0.5.712 aligned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: "KernelSU variant"
+        required: false
+        default: "BakaSU"
+        type: string
+      enable_susfs:
+        description: "Enable SUSFS (gki-android15-6.6)"
+        required: false
+        default: true
+        type: boolean
+      enable_bbg:
+        description: "Enable Baseband-Guard"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build-kernel:
+    name: "oneplus-ogki-6.6.89-4k"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      ANDROID_VERSION: android15
+      KERNEL_VERSION: "6.6"
+      SUB_LEVEL: "89"
+      OS_PATCH_LEVEL: "2025-06"
+      TARGET_LOCALVERSION: "-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+      KBUILD_BUILD_USER: "kleaf"
+      KBUILD_BUILD_HOST: "build-host"
+      KBUILD_BUILD_TIMESTAMP: "Mon Dec  8 04:00:43 UTC 2025"
+      KBUILD_BUILD_VERSION: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ccache bc bison flex libssl-dev libelf-dev dwarves zstd lz4 jq git curl python3
+
+      - name: Setup git & repo tool
+        run: |
+          git config --global user.name "ChingYangcloud"
+          git config --global user.email "bot@users.noreply.github.com"
+          mkdir -p "$GITHUB_WORKSPACE/bin" "$GITHUB_WORKSPACE/kernel"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$GITHUB_WORKSPACE/bin/repo"
+          chmod +x "$GITHUB_WORKSPACE/bin/repo"
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+          echo "KERNEL_ROOT=$GITHUB_WORKSPACE/kernel" >> "$GITHUB_ENV"
+
+      - name: Sync AOSP GKI 6.6.89 (deprecated/android15-6.6-2025-06)
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          FORMATTED_BRANCH="${ANDROID_VERSION}-${KERNEL_VERSION}-${OS_PATCH_LEVEL}"
+          repo init --depth=1 -u https://android.googlesource.com/kernel/manifest \
+            -b common-${FORMATTED_BRANCH} --repo-rev=v2.16
+          if git ls-remote https://android.googlesource.com/kernel/common "${FORMATTED_BRANCH}" | grep -q deprecated; then
+            sed -i "s|\"${FORMATTED_BRANCH}\"|\"deprecated/${FORMATTED_BRANCH}\"|g" .repo/manifests/default.xml
+          fi
+          repo sync -c -j4 --jobs-checkout=4 --no-tags --no-clone-bundle --retry-fetches=3
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)' common/Makefile
+
+      - name: Integrate BakaSU
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          if [ "${{ inputs.ksu_variant }}" = "BakaSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
+          else
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash
+          fi
+
+      - name: Integrate SUSFS (gki-android15-6.6)
+        if: inputs.enable_susfs
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          git clone --depth=1 -b "gki-${ANDROID_VERSION}-${KERNEL_VERSION}" https://gitlab.com/simonpunk/susfs4ksu.git "$GITHUB_WORKSPACE/susfs4ksu" || \
+            git clone --depth=1 -b "gki-${ANDROID_VERSION}-${KERNEL_VERSION}" https://github.com/ShirkNeko/susfs4ksu.git "$GITHUB_WORKSPACE/susfs4ksu"
+          cp -r "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/"* ./common/fs/
+          cp -r "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/"* ./common/include/linux/
+          cd ./common
+          PATCH_FILE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          DMA_ADDED=0
+          if awk '/^diff --git a\/fs\/proc\/base.c /{f=1;next} /^diff --git /{f=0} f && $0 == " #include <linux/dma-buf.h>" {found=1} END{exit !found}' "$PATCH_FILE"; then
+            if ! grep -qxF '#include <linux/dma-buf.h>' fs/proc/base.c; then
+              sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
+              DMA_ADDED=1
+            fi
+          fi
+          ZSWAP_ADDED=0
+          if awk '/^diff --git a\/mm\/memory.c /{f=1;next} /^diff --git /{f=0} f && $0 == " #include <linux/zswap.h>" {found=1} END{exit !found}' "$PATCH_FILE"; then
+            if ! grep -qxF '#include <linux/zswap.h>' mm/memory.c; then
+              sed -i '/^#include <linux\/mm_inline.h>$/a #include <linux/zswap.h>' mm/memory.c
+              ZSWAP_ADDED=1
+            fi
+          fi
+          patch -p1 --fuzz=3 < "$PATCH_FILE"
+          [ "$ZSWAP_ADDED" -eq 1 ] && sed -i '/^#include <linux\/zswap.h>$/d' mm/memory.c || true
+          [ "$DMA_ADDED" -eq 1 ] && sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c || true
+
+      - name: Integrate Baseband-Guard (BBG)
+        if: inputs.enable_bbg
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          curl -LSs https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' common/security/Kconfig
+
+      - name: Configure OnePlus OGKI 6.6.89 4K & Banner Alignment
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          DEFCONFIG="$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig"
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_KSU=y
+          CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%-ChingyangKernel"
+          CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+          EOF
+          if grep -q "F2FS_FS_DEDUP" common/fs/f2fs/Kconfig; then
+            echo "# CONFIG_F2FS_FS_DEDUP is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_F2FS_FS_COMPRESSION_FIXED_OUTPUT is not set" >> "$DEFCONFIG"
+          fi
+          if [ "${{ inputs.enable_bbg }}" = "true" ]; then
+            echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          fi
+          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+            cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
+          EOF
+          fi
+
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          sed -i '/^[[:space:]]*"protected_exports_list"/d; /kmi_symbol_list_strict_mode/d' ./common/BUILD.bazel 2>/dev/null || true
+          rm -rf ./common/android/abi_gki_protected_exports_*
+          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl 2>/dev/null || true
+          sed -i "\$s|echo \"\$res\"|echo \"${TARGET_LOCALVERSION}\"|" ./common/scripts/setlocalversion 2>/dev/null || true
+          sed -i "/^CONFIG_LOCALVERSION=/ s/=\"[^\"]*\"/=\"${TARGET_LOCALVERSION}\"/" "$DEFCONFIG" 2>/dev/null || true
+
+          if [ -f ./common/scripts/mkcompile_h ]; then
+            f=./common/scripts/mkcompile_h
+            if grep -q 'UTS_VERSION=' "$f"; then
+              perl -pi -e "s{UTS_VERSION=\"\\\$\\\(.*?\\\)\"}{UTS_VERSION=\"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\"}" "$f"
+            fi
+            perl -0777 -pi -e "s{cat <<EOF}{cat <<EOF\n#undef UTS_VERSION\n#define UTS_VERSION \"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\" } unless /#define UTS_VERSION \"#1/" "$f"
+          fi
+          if [ -f ./common/init/version-timestamp.c ]; then
+            perl -pi -e "s{\bUTS_VERSION\b}{\"#1 SMP PREEMPT ${KBUILD_BUILD_TIMESTAMP}\"}" ./common/init/version-timestamp.c
+          fi
+
+      - name: Build Kernel (LTO=none, aligned to stock)
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -o pipefail
+          sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64 2>/dev/null || true
+          sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64 2>/dev/null || true
+          sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64 2>/dev/null || true
+
+          git -C common diff arch/arm64/configs/gki_defconfig | grep '^+' | grep -v '^+++' | sed 's/^+//' > common/arch/arm64/configs/ksu.fragment || true
+          git -C common checkout -- arch/arm64/configs/gki_defconfig
+
+          tools/bazel build --config=fast --lto=none \
+            --action_env="KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP}" \
+            --action_env="KBUILD_BUILD_USER=${KBUILD_BUILD_USER}" \
+            --action_env="KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST}" \
+            --action_env="KBUILD_BUILD_VERSION=${KBUILD_BUILD_VERSION}" \
+            --defconfig_fragment=//common:arch/arm64/configs/ksu.fragment \
+            //common:kernel_aarch64_dist 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          cp ./bazel-bin/common/kernel_aarch64/Image "$GITHUB_WORKSPACE/Image"
+          strings "$GITHUB_WORKSPACE/Image" | grep 'Linux version' | head -n 1
+
+      - name: Package AnyKernel3 (forward-slash ZIP + integrity & TG verification)
+        if: success()
+        run: |
+          git clone --depth=1 -b gki-2.0 https://github.com/WildKernels/AnyKernel3.git "$GITHUB_WORKSPACE/AnyKernel3"
+          rm -rf "$GITHUB_WORKSPACE/AnyKernel3/.git"
+          cp "$GITHUB_WORKSPACE/Image" "$GITHUB_WORKSPACE/AnyKernel3/Image"
+          cp "$GITHUB_WORKSPACE/ak3_template/anykernel-6.6.sh" "$GITHUB_WORKSPACE/AnyKernel3/anykernel.sh"
+          python3 - << 'PYEOF'
+          import hashlib, os, time, zipfile
+          src = os.path.abspath(os.environ["GITHUB_WORKSPACE"] + "/AnyKernel3")
+          out = os.environ["GITHUB_WORKSPACE"] + "/Chinyang-6.6.89-ogki-4k-AnyKernel3.zip"
+
+          def sha256_file(p):
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(65536), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          ak_sh = os.path.join(src, "anykernel.sh")
+          with open(ak_sh, "r", encoding="utf-8") as f:
+              txt = f.read()
+          txt = (txt
+              .replace("__EXP_IMAGE__", sha256_file(os.path.join(src, "Image")))
+              .replace("__EXP_CORE__", sha256_file(os.path.join(src, "tools/ak3-core.sh")))
+              .replace("__EXP_BOOT__", sha256_file(os.path.join(src, "tools/magiskboot")))
+              .replace("__EXP_BUSYBOX__", sha256_file(os.path.join(src, "tools/busybox")))
+              .replace("\r\n", "\n"))
+          with open(ak_sh, "w", encoding="utf-8", newline="\n") as f:
+              f.write(txt)
+
+          sum_lines = []
+          for root, _, files in os.walk(src):
+              for fname in sorted(files):
+                  full = os.path.join(root, fname)
+                  rel = os.path.relpath(full, src).replace("\\", "/")
+                  if rel == "sha256sum.txt":
+                      continue
+                  sum_lines.append(f"{sha256_file(full)}  {rel}")
+          sum_lines.sort(key=lambda x: x.split("  ", 1)[1])
+          with open(os.path.join(src, "sha256sum.txt"), "w", encoding="utf-8", newline="\n") as f:
+              f.write("\n".join(sum_lines) + "\n")
+
+          now = time.localtime()[:6]
+          with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for root, _, files in os.walk(src):
+                  for fname in sorted(files):
+                      full = os.path.join(root, fname)
+                      arc = os.path.relpath(full, src).replace("\\", "/")
+                      with open(full, "rb") as f:
+                          data = f.read()
+                      if arc.endswith((".sh", "update-binary", "updater-script")):
+                          data = data.replace(b"\r\n", b"\n")
+                      zi = zipfile.ZipInfo(arc, date_time=now)
+                      zi.create_system = 3
+                      zi.external_attr = (0o100755 if (arc.endswith(".sh") or arc.startswith("tools/") or "META-INF/" in arc) else 0o100644) << 16
+                      zf.writestr(zi, data)
+          print("Packaged:", out, "SHA-256:", sha256_file(out))
+          PYEOF
+
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-6.6.89-ogki
+          path: |
+            Image
+            build.log
+            Chinyang-6.6.89-ogki-4k-AnyKernel3.zip
